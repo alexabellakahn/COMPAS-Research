@@ -1,0 +1,120 @@
+# COMPAS Dataset Analysis
+# continues the analysis of the COMPAS dataset with a focus on building a fairer model
+# and exploring the ethical tradeoffs in machine learning.
+
+# Downloading the dataset
+!wget -q --show-progress 'https://storage.googleapis.com/inspirit-ai-data-bucket-1/Data/AI%20Scholars/Sessions%206%20-%2010%20(Projects)/Projects%20-%20AI%20and%20Ethics%20-%20Criminal%20Justice/compas-scores-two-years.csv'
+
+# Importing necessary libraries
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+import seaborn as sns
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import ConfusionMatrixDisplay, confusion_matrix, roc_curve
+
+
+# Dataset Preprocessing
+
+# Load the dataset
+data = pd.read_csv("compas-scores-two-years.csv")
+
+# Column descriptions (for reference):
+# sex: Male or female
+# age: Numerical age
+# age_category: Age group (Under 25, 25-45, Over 45)
+# race: African-American, Caucasian, Asian, Native American, Hispanic, Other
+# recidivated_last_two_years: Recidivated within two years (target variable)
+
+# Remove unnecessary columns and rename remaining ones
+columns_to_drop = [
+    'id', 'name', 'first', 'last', 'compas_screening_date', 'dob', 'days_b_screening_arrest',
+    'c_jail_in', 'c_jail_out', 'c_case_number', 'c_offense_date', 'c_arrest_date', 
+    'c_days_from_compas', 'r_case_number', 'r_charge_degree', 'r_days_from_arrest', 
+    'r_offense_date', 'r_charge_desc', 'r_jail_in', 'r_jail_out', 'vr_case_number', 
+    'vr_charge_degree', 'vr_offense_date', 'decile_score.1', 'violent_recid', 'vr_charge_desc', 
+    'in_custody', 'out_custody', 'priors_count.1', 'start', 'end', 'v_screening_date', 'event', 
+    'type_of_assessment', 'v_type_of_assessment', 'screening_date', 'score_text', 'v_score_text', 
+    'v_decile_score', 'decile_score', 'is_recid', 'is_violent_recid'
+]
+
+df = data.drop(columns=columns_to_drop)
+df.columns = [
+    'sex', 'age', 'age_category', 'race', 'juvenile_felony_count', 
+    'juvenile_misdemeanor_count', 'juvenile_other_count', 'prior_convictions', 
+    'current_charge', 'charge_description', 'recidivated_last_two_years'
+]
+
+# Drop rare charges (fewer than 70 occurrences)
+value_counts = df['charge_description'].value_counts()
+df = df[df['charge_description'].isin(value_counts[value_counts >= 70].index)].reset_index(drop=True)
+
+# One-hot encode categorical variables
+for colname in df.select_dtypes(include='object').columns:
+    one_hot = pd.get_dummies(df[colname], prefix=colname)
+    df = pd.concat([df.drop(colname, axis=1), one_hot], axis=1)
+
+
+# Building and Evaluating the Model
+
+# Split dataset into training and testing
+y_column = 'recidivated_last_two_years'
+X_all, y_all = df.drop(y_column, axis=1), df[y_column]
+X_train, X_test, y_train, y_test = train_test_split(X_all, y_all, test_size=0.3, random_state=1)
+
+# Train a logistic regression model
+model_lr = LogisticRegression(max_iter=1000)
+model_lr.fit(X_train, y_train)
+
+# Evaluate model performance
+print("Logistic Regression Training Accuracy:", model_lr.score(X_train, y_train))
+print("Logistic Regression Testing Accuracy:", model_lr.score(X_test, y_test))
+
+# Fairness Analysis
+
+# Separate data by race for fairness analysis
+X_african_american = X_test[X_test['race_African-American'] == 1]
+X_caucasian = X_test[X_test['race_Caucasian'] == 1]
+y_true_aa = y_test[X_african_american.index]
+y_true_caucasian = y_test[X_caucasian.index]
+
+# Predictions for each race
+y_pred_aa = model_lr.predict(X_african_american)
+y_pred_caucasian = model_lr.predict(X_caucasian)
+
+# Confusion matrices for African-American and Caucasian groups
+ConfusionMatrixDisplay.from_estimator(model_lr, X_african_american, y_true_aa, cmap=plt.cm.Blues)
+plt.title("Confusion Matrix: African-American")
+plt.show()
+
+ConfusionMatrixDisplay.from_estimator(model_lr, X_caucasian, y_true_caucasian, cmap=plt.cm.Blues)
+plt.title("Confusion Matrix: Caucasian")
+plt.show()
+
+# False Positive Rates (FPR) analysis
+y_scores_aa = model_lr.predict_proba(X_african_american)[:, 1]
+y_scores_caucasian = model_lr.predict_proba(X_caucasian)[:, 1]
+
+sns.heatmap(confusion_matrix(y_true_caucasian, (y_scores_caucasian > 0.5)), annot=True, fmt="d", cmap=plt.cm.Blues)
+tn, fp, fn, tp = confusion_matrix(y_true_caucasian, (y_scores_caucasian > 0.5)).ravel()
+fpr_caucasian = fp / (fp + tn)
+print("Caucasian FPR:", fpr_caucasian)
+
+# Adjust threshold to equalize FPR
+_, _, thresh_caucasian = roc_curve(y_true_caucasian, y_scores_caucasian)
+fpr_aa, _, thresh_african_american = roc_curve(y_true_aa, y_scores_aa)
+index = np.argmin(np.abs(fpr_aa - fpr_caucasian))
+closest_threshold = thresh_african_american[index]
+
+sns.heatmap(confusion_matrix(y_true_aa, (y_scores_aa > closest_threshold)), annot=True, fmt="d", cmap=plt.cm.Blues)
+plt.title("Adjusted Threshold: African-American")
+plt.show()
+
+# FPR for African-American group with adjusted threshold
+tn, fp, fn, tp = confusion_matrix(y_true_aa, (y_scores_aa > closest_threshold)).ravel()
+print("African-American FPR (Adjusted):", fp / (fp + tn))
+
+# Final evaluation with adjusted fairness
+adjusted_score = model_lr.score(X_african_american, (y_scores_aa > closest_threshold))
+print("Adjusted Model Accuracy (African-American):", adjusted_score)
