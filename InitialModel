@@ -1,0 +1,116 @@
+# Import necessary libraries
+import warnings
+warnings.filterwarnings("ignore")
+
+import pandas as pd
+import numpy as np
+import matplotlib.pyplot as plt
+from sklearn.linear_model import LogisticRegression
+from sklearn.model_selection import train_test_split
+from sklearn.metrics import accuracy_score, ConfusionMatrixDisplay, classification_report
+from sklearn.ensemble import RandomForestClassifier
+from sklearn.neural_network import MLPClassifier
+
+# Download the dataset
+!wget -q --show-progress 'https://storage.googleapis.com/inspirit-ai-data-bucket-1/Data/AI%20Scholars/Sessions%206%20-%2010%20(Projects)/Projects%20-%20AI%20and%20Ethics%20-%20Criminal%20Justice/compas-scores-two-years.csv'
+
+# Load data
+data = pd.read_csv("compas-scores-two-years.csv")
+data.head()
+
+# Clean and preprocess the dataset
+columns_to_drop = [
+    'id', 'name', 'first', 'last', 'compas_screening_date', 'dob', 
+    'days_b_screening_arrest', 'c_jail_in', 'c_jail_out', 'c_case_number', 
+    'c_offense_date', 'c_arrest_date', 'c_days_from_compas', 'r_case_number', 
+    'r_charge_degree', 'r_days_from_arrest', 'r_offense_date', 'r_charge_desc', 
+    'r_jail_in', 'r_jail_out', 'vr_case_number', 'vr_charge_degree', 
+    'vr_offense_date', 'decile_score.1', 'violent_recid', 'vr_charge_desc', 
+    'in_custody', 'out_custody', 'priors_count.1', 'start', 'end', 
+    'v_screening_date', 'event', 'type_of_assessment', 'v_type_of_assessment', 
+    'screening_date', 'score_text', 'v_score_text', 'v_decile_score', 
+    'decile_score', 'is_recid', 'is_violent_recid'
+]
+df = data.drop(columns=columns_to_drop)
+df.columns = [
+    'sex', 'age', 'age_category', 'race', 'juvenile_felony_count', 
+    'juvenile_misdemeanor_count', 'juvenile_other_count', 'prior_convictions', 
+    'current_charge', 'charge_description', 'recidivated_last_two_years'
+]
+
+# Explore the dataset
+print(f"Dataset shape: {df.shape}")
+print(f"Most common charges:\n{df['charge_description'].value_counts()[:3]}")
+print(f"Number of young individuals (age < 25) with >= 2 prior convictions: {np.sum((df['age'] < 25) & (df['prior_convictions'] >= 2))}")
+
+# Visualize race distribution
+df["race"].value_counts(normalize=True).plot(kind="bar", title="Race Distribution")
+plt.show()
+
+# Filter rare charges
+value_counts = df['charge_description'].value_counts()
+df = df[df['charge_description'].isin(value_counts[value_counts >= 70].index)].reset_index(drop=True)
+
+# One-hot encode categorical columns
+for colname in df.select_dtypes(include='object').columns:
+    one_hot = pd.get_dummies(df[colname], prefix=colname)
+    df = pd.concat([df.drop(colname, axis=1), one_hot], axis=1)
+
+print(f"Dataset shape after encoding: {df.shape}")
+df.head()
+
+# Split the data
+y_column = 'recidivated_last_two_years'
+X_all, y_all = df.drop(y_column, axis=1), df[y_column]
+X_train, X_test, y_train, y_test = train_test_split(X_all, y_all, test_size=0.3, random_state=1)
+
+# Logistic Regression
+model = LogisticRegression(max_iter=1000)
+model.fit(X_train, y_train)
+
+# Evaluate the model
+train_preds = model.predict(X_train)
+test_preds = model.predict(X_test)
+print(f"Training Accuracy: {accuracy_score(y_train, train_preds):.2f}")
+print(f"Testing Accuracy: {accuracy_score(y_test, test_preds):.2f}")
+
+# Random Forest
+rf_model = RandomForestClassifier(max_depth=5)
+rf_model.fit(X_train, y_train)
+
+train_preds_rf = rf_model.predict(X_train)
+test_preds_rf = rf_model.predict(X_test)
+print(f"Random Forest Training Accuracy: {accuracy_score(y_train, train_preds_rf):.2f}")
+print(f"Random Forest Testing Accuracy: {accuracy_score(y_test, test_preds_rf):.2f}")
+
+# Analyze performance by race
+def evaluate_by_race(model, X_test, y_test, race_column):
+    for race in ['Caucasian', 'African-American']:
+        subset = X_test[X_test[race] == 1]
+        acc = model.score(subset, y_test[subset.index])
+        print(f"Accuracy for {race}: {acc:.2f}")
+        y_pred = model.predict(subset)
+        ConfusionMatrixDisplay.from_estimator(model, subset, y_test[subset.index], cmap=plt.cm.Blues)
+        plt.title(f"Confusion Matrix: {race}")
+        plt.show()
+        print(classification_report(y_test[subset.index], y_pred))
+
+evaluate_by_race(rf_model, X_test, y_test, 'race')
+
+# Neural Network with race removed
+def remove_race(df):
+    race_columns = ["African-American", "Asian", "Caucasian", "Hispanic", "Native American", "Other"]
+    return df.drop(columns=race_columns, errors='ignore')
+
+X_train_no_race = remove_race(X_train)
+X_test_no_race = remove_race(X_test)
+
+nn_model = MLPClassifier(alpha=5, max_iter=1000)
+nn_model.fit(X_train_no_race, y_train)
+
+nn_preds = nn_model.predict(X_test_no_race)
+print(f"Neural Network Accuracy: {accuracy_score(y_test, nn_preds):.2f}")
+
+evaluate_by_race(nn_model, X_test_no_race, y_test, 'race')
+
+
